@@ -18,7 +18,11 @@ pers <- ifelse(pers < 0,0,pers) # should I be doing this? Yes I should
 parm.values$pers <- pers
 head(parm.values)
 parm.values$landAuth <- with(parm.values,((cooperation/100*pri)+pub)/10)
-parm.values$lhd <-  rescale(parm.values$lhd,from = c(0,3),to = c(0,10)) # LIFE HISTORY DIVERSITY
+# parm.values$landAuth <- with(parm.values,((cooperation/100*Private)+`Federal/State/Local/tribal`)*10)
+# parm.values$lhd <-  rescale(parm.values$lhd,from = c(0,3),to = c(0,10)) # LIFE HISTORY DIVERSITY
+tmp <- parm.values$lhd + 4
+parm.values$lhd <- ifelse(tmp == 7,10,tmp)
+parm.values$lhd[10] <- 0
 # omit unneeded parms
 head(parm.values)
 Places <- parm.values[,1:2]
@@ -50,9 +54,13 @@ model <- function(x) {
   adapCap <- 10 -((b["lhd"] * x[,"lhd"]) + (b["gd"] * x[,"gd"]) + (b["abund"] * x[,"abund"]))
   vul     <- (b["pers"] * x[,"pers"]) + (b["adcap"] * adapCap)
   CR      <- (b["threat"] * x[,"ts"]) + (b["vuln"] * vul)
+   # transform CR based on alpha and beta parameter averaged from stakeholder priors
+  CR <- dbeta(CR/10,5.814,5.126)/2.5866*10 # a = 5.814, b = 5.126 # 2.5866 = max(dbeta(seq(0,1,.001),5.814,5.126))*10
   # Human
   Mcost  <-  10-((b["fc"] * x[,"fc"]) + (b["spc"] * x[,"spc"]))
   MCP    <-  (b["pla"] * x[,"landAuth"]) + (b["mc"] * Mcost)
+  #int <- (.25+.1)/5, sl <- (.74+.89+1+1+1)/5
+  MCP <- .07 + (MCP*.926)
   # Relative Priority
   list("relative priority" = (b["mctat"] * MCP) + (b["cr"] * CR),"management capacity tats" = MCP,"conservation risk" = CR)
   # (b["mctat"] * MCP) + (b["cr"] * CR)
@@ -71,6 +79,9 @@ mod.out2
 ###################
 ### 1 Way Sensy ###
 ###################
+# PV <- as.matrix(parm.values)
+# rownames(PV) <- Places$core
+
 
 cores <- Places[[2]]
 nms <- colnames(PV)
@@ -78,17 +89,22 @@ names(nms) <- c("Political/Social\nCost","Financial\nCost","Threat\nScore","Abun
 
 ii <- 4 # variation parameter (don't exceed 5)
 PVlow <- ifelse(PV - ii < 0,0,PV - ii)
-PVhigh <- ifelse(PV + ii > 10,10,PV + ii)
+PVhigh <- ifelse(PV + ii > 10,10,PV + ii) # Reconvert these high and lows back to scale so we can see how these parameters are varying
+n <- 100
+mm <- t(mapply(seq,from = PVlow,to = PVhigh,length.out = n))
+mm <- lapply(split(1:184,rep(1:8,each = 23)),function(x) mm[x,])
+mm <- array(unlist(mm),c(length(cores),n,length(nms)),dimnames = list(cores,1:n,nms))
 
-f <- function(x){
-PV[,x] <- PVlow[,x]
-a <- model(PV)$`relative priority`
-PV[,x] <- PVhigh[,x]
-b <- model(PV)$`relative priority`
-cbind(a,b)
+f <- function(pms,n){
+PV[,pms] <- mm[,n,pms]
+model(PV)$`relative priority`
 }
-tmp <- lapply(nms,f)
-oneway <- array(unlist(tmp),dim =  c(length(cores),2,length(nms)),dimnames = list(cores,c("low","high"),nms))
+tmp <- sapply(nms,function(x) sapply(1:n,f,pms = x),simplify = "array")
+low <- apply(tmp,c(1,3),min)
+high <- apply(tmp,c(1,3),max)
+
+oneway <- sapply(names(nms),function(x) cbind(low = low[,x],high = high[,x]),simplify = "array")
+
 
 ###################
 ### 2-way sensy ###
@@ -106,7 +122,15 @@ TWsq <- array(dim = c(length(cores),LO,length(nms)),dimnames = list(cores,1:LO,n
 for(i in seq_along(nms)){
   TWsq[,,i] <- round(do.call(rbind,Map(seq,PVlow[,i],PVhigh[,i],length.out = LO)),3)
 }
-TWsq[,,"lhd"]
+# TWsq[,,"lhd"]
+
+# TWsq2 same,but rescaled back to original parameter scale for plotting purposes
+TWsq2 <- array(dim = dim(TWsq),dimnames = dimnames(TWsq))
+TWsq2[,,7:8] <- TWsq[,,7:8]*10 # % Land Authority & Persistance to %
+TWsq2[,,6] <- TWsq[,,6]/10 # Genetic Div. scaled back to 0-1
+TWsq2[,,3] <- rescale(TWsq[,,3],from = c(0,10),to = c(.2,3.2)) # Threat score
+TWsq2[,,c(1:2,4)] <- TWsq[,,c(1:2,4)]
+TWsq2[,,5] <- TWsq[,,5]
 
 # Sequence array part 2
 SQ <- array(dim = c(LO**2,2,nrow(nmi),length(cores)),dimnames = list(NULL,NULL,pnmi,cores))
@@ -130,4 +154,19 @@ twoway[,,z,q] <- sapply(1:LO**2,g,prm = z,ca = q)
 }
 }
 
+###########
 save(oneway,twoway,model,mod.out,mod.out2,PV,b,nms,cores,rnk,LO,TWsq,SQ,file = "ORBTSmodelout.RData")
+saveRDS(oneway,file = "ORBTS_app/objects/oneway.rds")
+saveRDS(twoway,file = "ORBTS_app/objects/twoway.rds")
+saveRDS(model,file = "ORBTS_app/objects/model.rds")
+saveRDS(mod.out,file = "ORBTS_app/objects/mod.out.rds")
+saveRDS(mod.out2,file = "ORBTS_app/objects/mod.out2.rds")
+saveRDS(PV,file = "ORBTS_app/objects/PV.rds")
+saveRDS(b,file = "ORBTS_app/objects/b.rds")
+saveRDS(nms,file = "ORBTS_app/objects/nms.rds")
+saveRDS(cores,file = "ORBTS_app/objects/cores.rds")
+saveRDS(rnk,file = "ORBTS_app/objects/rnk.rds")
+saveRDS(LO,file = "ORBTS_app/objects/LO.rds")
+saveRDS(TWsq,file = "ORBTS_app/objects/TWsq.rds")
+saveRDS(TWsq2,file = "ORBTS_app/objects/TWsq2.rds")
+saveRDS(SQ,file = "ORBTS_app/objects/SQ.rds")
